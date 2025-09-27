@@ -161,7 +161,7 @@ Use the companion FTP client or standard FTP clients for integration testing:
 ### Production Considerations
 - **User Authentication**: Only anonymous login supported
 - **Connection Limits**: No concurrent connection or rate limiting
-- **TLS/Security**: No encryption support (FTPS/SFTP)
+- **TLS/Security**: No encryption support (FTPS/SFTP) - see AUTH TLS implementation notes below
 - **Logging**: Minimal logging beyond debug output
 - **Configuration**: Hardcoded port and jail directory
 
@@ -210,3 +210,162 @@ go build && ./goftp -host localhost:2121 -user anonymous -pass test@example.com
 - Supports all server commands (RETR/STOR/LIST/SIZE/etc.)
 - Real-time progress bars using SIZE command
 - Graceful error handling and proper FTP flow
+
+## FTPS (FTP over TLS) Implementation Notes
+
+### Overview
+FTPS adds TLS encryption to FTP using RFC 4217. The implementation leverages Go's `crypto/tls` package for all cryptographic operations, avoiding manual crypto implementation.
+
+### Required Commands
+
+#### AUTH TLS - Control Channel Encryption
+```go
+func handleAUTH(cs *ClientSession, args []string) error {
+    if args[0] != "TLS" {
+        return cs.sendFTPResponse(504, "Auth type not supported")
+    }
+
+    // Send proceed response before TLS handshake
+    cs.sendFTPResponse(234, "Proceed with negotiation")
+
+    // Upgrade connection using Go's TLS
+    tlsConn := tls.Server(cs.conn, cs.server.tlsConfig)
+    if err := tlsConn.Handshake(); err != nil {
+        return err
+    }
+
+    // Replace connection - all future I/O is encrypted
+    cs.conn = tlsConn
+    cs.isTLS = true
+    return nil
+}
+```
+
+#### PBSZ - Protection Buffer Size (Required but Meaningless)
+```go
+func handlePBSZ(cs *ClientSession, args []string) error {
+    if !cs.isTLS {
+        return cs.sendFTPResponse(503, "PBSZ not allowed on insecure control connection")
+    }
+    // For TLS, always respond with 0 (no application buffering needed)
+    return cs.sendFTPResponse(200, "PBSZ set to 0")
+}
+```
+
+#### PROT - Data Channel Protection Level
+```go
+func handlePROT(cs *ClientSession, args []string) error {
+    if !cs.isTLS {
+        return cs.sendFTPResponse(503, "PROT not allowed on insecure control connection")
+    }
+    switch args[0] {
+    case "C": // Clear (unencrypted data channel)
+        cs.dataProtection = "C"
+        return cs.sendFTPResponse(200, "Data channel will be in clear")
+    case "P": // Private (encrypted data channel)
+        cs.dataProtection = "P"
+        return cs.sendFTPResponse(200, "Data channel will be encrypted")
+    default:
+        return cs.sendFTPResponse(504, "Protection level not supported")
+    }
+}
+```
+
+### Data Channel Encryption
+For PROT P (private), data connections also need TLS:
+
+```go
+func handlePASV(cs *ClientSession, args []string) error {
+    // ... existing PASV logic ...
+
+    dataListener, err := net.Listen("tcp", "0.0.0.0:")
+    if err != nil {
+        return cs.sendFTPResponse(425)
+    }
+
+    // Wrap with TLS if data protection is private
+    if cs.isTLS && cs.dataProtection == "P" {
+        cs.dataListener = tls.NewListener(dataListener, cs.server.tlsConfig)
+    } else {
+        cs.dataListener = dataListener
+    }
+
+    // ... rest of PASV response logic ...
+}
+```
+
+### Certificate Management
+Use Go's crypto utilities for self-signed certificates:
+
+```go
+import (
+    "crypto/rand"
+    "crypto/rsa"
+    "crypto/tls"
+    "crypto/x509"
+    "crypto/x509/pkix"
+    "encoding/pem"
+    "math/big"
+    "time"
+)
+
+func generateSelfSignedCert() (tls.Certificate, error) {
+    // Generate RSA private key
+    priv, err := rsa.GenerateKey(rand.Reader, 2048)
+    if err != nil {
+        return tls.Certificate{}, err
+    }
+
+    // Certificate template
+    template := x509.Certificate{
+        SerialNumber: big.NewInt(1),
+        Subject: pkix.Name{
+            Organization: []string{"Go FTP Server"},
+            CommonName:   "localhost",
+        },
+        NotBefore:   time.Now(),
+        NotAfter:    time.Now().Add(365 * 24 * time.Hour),
+        KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+        ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+        IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+        DNSNames:    []string{"localhost"},
+    }
+
+    // Self-sign the certificate
+    certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+    if err != nil {
+        return tls.Certificate{}, err
+    }
+
+    // Convert to PEM format for tls.X509KeyPair
+    certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+    keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+
+    return tls.X509KeyPair(certPEM, keyPEM)
+}
+```
+
+### ClientSession Changes
+Add TLS state tracking:
+
+```go
+type ClientSession struct {
+    conn            net.Conn
+    isTLS           bool
+    dataProtection  string // "C" for clear, "P" for private
+    // ... existing fields
+}
+```
+
+### Key Points
+- **PBSZ is mandatory but meaningless** - TLS handles all buffering internally, always respond with 0
+- **Data channel encryption** is optional - PROT C (clear) vs PROT P (private)
+- **Certificate warnings** are expected with self-signed certs in development
+- **Go's crypto/tls** handles all cryptographic complexity - no manual crypto implementation needed
+- **Connection upgrade** - simply wrap existing connection with tls.Server(), all existing FTP logic continues to work
+
+### Security Benefits
+- **Control channel encryption** - AUTH TLS protects USER/PASS and all commands
+- **Data channel encryption** - PROT P protects file transfers
+- **Standard compliance** - RFC 4217 FTPS, not custom crypto
+- **Battle-tested implementation** - Go's TLS library is production-grade

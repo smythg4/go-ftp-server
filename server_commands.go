@@ -258,14 +258,32 @@ func handleDELE(cs *ClientSession, args []string) error {
 		return cs.sendFTPResponse(550)
 	}
 
-	// check with filemanager for file existence and checkout
-
 	err = cs.server.fileManager.DeleteFile(fullPath, cs.clientID)
 	if err != nil {
 		return cs.sendFTPResponse(550, err.Error()) // extract the precise reason from ReserveDownload
 	}
 
 	return cs.sendFTPResponse(250, "File deleted successfully!")
+}
+
+func handleMKD(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	if len(args) != 1 {
+		return cs.sendFTPResponse(501)
+	}
+	fullPath, err := cs.validatePath(args[0])
+	if err != nil {
+		return cs.sendFTPResponse(550)
+	}
+
+	err = cs.server.fileManager.MakeDirectory(fullPath)
+	if err != nil {
+		return cs.sendFTPResponse(550, err.Error())
+	}
+
+	return cs.sendFTPResponse(257, "Directory successfully created!")
 }
 
 func handleRETR(cs *ClientSession, args []string) error {
@@ -290,6 +308,7 @@ func handleRETR(cs *ClientSession, args []string) error {
 		return cs.sendFTPResponse(550, err.Error()) // extract the precise reason from ReserveDownload
 	}
 	defer file.Close()
+	defer cs.server.fileManager.ReleaseDownload(fullPath, cs.clientID)
 
 	err = cs.sendFTPResponse(150) // everything's looking good, let's get you a download!
 	if err != nil {
@@ -308,8 +327,6 @@ func handleRETR(cs *ClientSession, args []string) error {
 	if err != nil {
 		return cs.sendFTPResponse(911, "Transfer failed!")
 	}
-
-	cs.server.fileManager.ReleaseDownload(fullPath, cs.clientID)
 
 	return cs.sendFTPResponse(226)
 }
@@ -350,6 +367,7 @@ func handleSTOR(cs *ClientSession, args []string) error {
 	if err != nil {
 		return cs.sendFTPResponse(550, err.Error()) // extract the precise reason from ReserveDownload
 	}
+	defer cs.server.fileManager.ReleaseUpload(fullPath, cs.clientID)
 
 	err = cs.sendFTPResponse(150) // everything's looking good, let's get you uploading!
 	if err != nil {
@@ -369,6 +387,7 @@ func handleSTOR(cs *ClientSession, args []string) error {
 		return cs.sendFTPResponse(911, "temp file creation failed!")
 	}
 	defer tempFile.Close()
+
 	_, err = io.Copy(tempFile, dataConn)
 	if err != nil {
 		return cs.sendFTPResponse(911, "Transfer failed!")
@@ -378,7 +397,6 @@ func handleSTOR(cs *ClientSession, args []string) error {
 	if err != nil {
 		return cs.sendFTPResponse(550, "File rename on server side failed")
 	}
-	cs.server.fileManager.ReleaseUpload(fullPath, cs.clientID)
 
 	return cs.sendFTPResponse(226)
 }

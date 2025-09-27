@@ -136,6 +136,10 @@ func (fm *FileManager) WriteFile(fullPath, tempPath string) error {
 	return os.Rename(tempPath, fullPath) // atomic rename
 }
 
+func (fm *FileManager) MakeDirectory(fullPath string) error {
+	return os.MkdirAll(fullPath, os.ModeDir|0755)
+}
+
 func (fm *FileManager) DeleteFile(fullPath, clientID string) error {
 	// Do I/O validation outside critical section
 	fileInfo, err := os.Stat(fullPath)

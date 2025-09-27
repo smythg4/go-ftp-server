@@ -80,6 +80,11 @@ func init() {
 			description: "Delete remote file at given file path",
 			callback:    handleDELE,
 		},
+		"MKD": {
+			name:        "MKD <filepath>",
+			description: "Create a remote directory at given filepath",
+			callback:    handleMKD,
+		},
 		"NOOP": {
 			name:        "NOOP",
 			description: "No operation (keepalive)",
