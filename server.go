@@ -39,16 +39,17 @@ func (fm *FileManager) ReleaseUpload(fullPath, clientID string) {
 }
 
 func (fm *FileManager) GetSize(fullPath string) (int64, error) {
-	fm.mutex.RLock()
-	defer fm.mutex.RUnlock()
-
-	// check if the file exists and is readable
+	// Do I/O operations outside critical section
 	fileInfo, err := os.Stat(fullPath)
 	if os.IsNotExist(err) {
 		return 0, fmt.Errorf("file not found")
 	} else if err != nil {
 		return 0, fmt.Errorf("file access error")
 	}
+
+	// Only check active operations under mutex
+	fm.mutex.RLock()
+	defer fm.mutex.RUnlock()
 
 	if existingClient, exists := fm.activeUploads[fullPath]; exists {
 		return 0, fmt.Errorf("file busy (upload in progress by client %s)", existingClient)
@@ -58,10 +59,7 @@ func (fm *FileManager) GetSize(fullPath string) (int64, error) {
 }
 
 func (fm *FileManager) ReserveDownload(fullPath, clientID string) (*os.File, error) {
-	fm.mutex.Lock()
-	defer fm.mutex.Unlock()
-
-	// check if the file exists and is readable
+	// Do I/O operations outside critical section
 	fileInfo, err := os.Stat(fullPath)
 	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("file not found")
@@ -74,13 +72,27 @@ func (fm *FileManager) ReserveDownload(fullPath, clientID string) (*os.File, err
 		return nil, fmt.Errorf("cannot download directories")
 	}
 
+	// Check and reserve under mutex
+	fm.mutex.Lock()
 	if existingClient, exists := fm.activeUploads[fullPath]; exists {
+		fm.mutex.Unlock()
 		return nil, fmt.Errorf("file busy (upload in progress by client %s)", existingClient)
 	}
 
 	// reserve for download
 	fm.activeDownloads[fullPath] = clientID
-	return os.Open(fullPath)
+	fm.mutex.Unlock()
+
+	// Open file outside mutex
+	file, err := os.Open(fullPath)
+	if err != nil {
+		// If open fails, clean up reservation
+		fm.mutex.Lock()
+		delete(fm.activeDownloads, fullPath)
+		fm.mutex.Unlock()
+		return nil, fmt.Errorf("failed to open file")
+	}
+	return file, nil
 }
 
 func (fm *FileManager) ReleaseDownload(fullPath, clientID string) {
@@ -122,4 +134,46 @@ func (fm *FileManager) validatePath(userPath, currentDir string) (string, error)
 
 func (fm *FileManager) WriteFile(fullPath, tempPath string) error {
 	return os.Rename(tempPath, fullPath) // atomic rename
+}
+
+func (fm *FileManager) DeleteFile(fullPath, clientID string) error {
+	// Do I/O validation outside critical section
+	fileInfo, err := os.Stat(fullPath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("file not found")
+	} else if err != nil {
+		return fmt.Errorf("file access error")
+	}
+
+	// don't allow deleting directories
+	if fileInfo.IsDir() {
+		return fmt.Errorf("cannot delete directories")
+	}
+
+	// Check and reserve under mutex
+	fm.mutex.Lock()
+	if existingClient, exists := fm.activeUploads[fullPath]; exists {
+		fm.mutex.Unlock()
+		return fmt.Errorf("file busy (upload in progress by client %s)", existingClient)
+	}
+	if existingClient, exists := fm.activeDownloads[fullPath]; exists {
+		fm.mutex.Unlock()
+		return fmt.Errorf("file busy (download in progress by client %s)", existingClient)
+	}
+	// reserve for deletion
+	fm.activeUploads[fullPath] = clientID
+	fm.mutex.Unlock()
+
+	// Perform actual deletion outside mutex
+	err = os.Remove(fullPath)
+
+	// Clean up reservation
+	fm.mutex.Lock()
+	delete(fm.activeUploads, fullPath)
+	fm.mutex.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("system error deleting file")
+	}
+	return nil
 }

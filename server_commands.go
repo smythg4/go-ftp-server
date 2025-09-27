@@ -246,6 +246,28 @@ func handleSTAT(cs *ClientSession, args []string) error {
 	return cs.sendFTPResponse(502, "STAT with directory not implemented at this time.")
 }
 
+func handleDELE(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	if len(args) != 1 {
+		return cs.sendFTPResponse(501)
+	}
+	fullPath, err := cs.validatePath(args[0])
+	if err != nil {
+		return cs.sendFTPResponse(550)
+	}
+
+	// check with filemanager for file existence and checkout
+
+	err = cs.server.fileManager.DeleteFile(fullPath, cs.clientID)
+	if err != nil {
+		return cs.sendFTPResponse(550, err.Error()) // extract the precise reason from ReserveDownload
+	}
+
+	return cs.sendFTPResponse(250, "File deleted successfully!")
+}
+
 func handleRETR(cs *ClientSession, args []string) error {
 	if !cs.isAuth {
 		return cs.sendFTPResponse(530)

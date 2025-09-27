@@ -75,6 +75,11 @@ func init() {
 			description: "Upload local file to remote current working directory",
 			callback:    handleSTOR,
 		},
+		"DELE": {
+			name:        "DELE [pathname]",
+			description: "Delete remote file at given file path",
+			callback:    handleDELE,
+		},
 		"NOOP": {
 			name:        "NOOP",
 			description: "No operation (keepalive)",
