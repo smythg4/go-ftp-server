@@ -75,5 +75,10 @@ func init() {
 			description: "Upload local file to remote current working directory",
 			callback:    handleSTOR,
 		},
+		"NOOP": {
+			name:        "NOOP",
+			description: "No operation (keepalive)",
+			callback:    handleNOOP,
+		},
 	}
 }

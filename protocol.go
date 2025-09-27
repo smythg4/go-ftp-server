@@ -31,12 +31,22 @@ func parseCommand(input string) (*FTPCommand, error) {
 	}, nil
 }
 func (cs *ClientSession) sendFTPResponse(code int, message ...string) error {
+	var responseText string
 	if len(message) > 0 {
-		return cs.sendResponse(fmt.Sprintf("%d %s\r\n", code, message[0]))
+		responseText = message[0]
+	} else {
+		responseText = ftpResponses[code]
 	}
-	return cs.sendResponse(fmt.Sprintf("%d %s\r\n", code, ftpResponses[code]))
+
+	// Log the response we're sending
+	cs.logf("Response: %d %s", code, responseText)
+
+	return cs.sendResponse(fmt.Sprintf("%d %s\r\n", code, responseText))
 }
 func (cs *ClientSession) sendMultilineResponse(code int, lines []string, finalMessage string) error {
+	// Log the multi-line response
+	cs.logf("Response: %d-%s (+ %d more lines) %s", code, lines[0], len(lines)-1, finalMessage)
+
 	// Send initial line with dash
 	cs.sendResponse(fmt.Sprintf("%d-%s\r\n", code, lines[0]))
 

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
+	"time"
 )
 
 type ClientSession struct {
@@ -18,38 +20,38 @@ type ClientSession struct {
 func (cs *ClientSession) run() {
 	defer func() { _ = cs.conn.Close() }()
 	lines := []string{
-		"Welcome to the go-ftp server!",
-		"\tIt's gonna be so great, you have no idea",
+		"go-ftp-server v0.0.0.1",
+		"   RFC 959 compliant. Built from scratch in Go.",
+		"   Simple FTP. No frills. Just files.",
 	}
 	err := cs.sendMultilineResponse(220, lines, "Service ready for new user.")
 	if err != nil {
-		fmt.Printf("error sending welcome message: %v", err)
+		cs.logf("Error sending welcome message: %v", err)
 	}
 
 	buf := make([]byte, 1024)
 	for {
 		n, err := cs.conn.Read(buf)
 		if err != nil {
-			fmt.Printf("Client %s disconnected: %v\n", cs.clientID, err)
+			cs.logf("Disconnected: %v", err)
 			return
 		}
-		fmt.Printf(" %s: %s", cs.clientID, string(buf[:n]))
+		cs.logf("Command: %s", strings.TrimSpace(string(buf[:n])))
 
 		cmd, err := parseCommand(string(buf[:n]))
 		if err != nil {
-			fmt.Printf("Error - %v", err)
+			cs.logf("Parse error: %v", err)
 			return
 		}
 
 		if handler, exists := serverRegistry[cmd.Command]; exists {
 			err := handler.callback(cs, cmd.Args)
 			if err != nil {
-
 				if err.Error() == "client requested quit" {
-					fmt.Printf("Client %s session ending: %v\n", cs.clientID, err)
+					cs.logf("Session ending: %v", err)
 					return
 				}
-				fmt.Printf("Error - %v\n", err)
+				cs.logf("Command error: %v", err)
 			}
 		} else {
 			cs.sendFTPResponse(502)
@@ -59,6 +61,12 @@ func (cs *ClientSession) run() {
 
 func (cs *ClientSession) Close() error {
 	return cs.conn.Close()
+}
+
+// logf prints a timestamped log message for this session
+func (cs *ClientSession) logf(format string, args ...interface{}) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Printf("[%s] %s: %s\n", timestamp, cs.clientID, fmt.Sprintf(format, args...))
 }
 
 func (cs *ClientSession) validatePath(userPath string) (string, error) {

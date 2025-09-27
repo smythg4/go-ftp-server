@@ -361,6 +361,13 @@ func handleSTOR(cs *ClientSession, args []string) error {
 	return cs.sendFTPResponse(226)
 }
 
+func handleNOOP(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	return cs.sendFTPResponse(200, "NOOP command successful")
+}
+
 func handlerQUIT(cs *ClientSession, args []string) error {
 	cs.sendFTPResponse(221)
 	return fmt.Errorf("client requested quit")

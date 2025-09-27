@@ -8,7 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
+
+// logf prints a timestamped log message
+func logf(format string, args ...interface{}) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Printf("[%s] %s\n", timestamp, fmt.Sprintf(format, args...))
+}
 
 func main() {
 	done := make(chan struct{})
@@ -20,7 +27,7 @@ func main() {
 
 	go func() {
 		<-sigChan
-		fmt.Println("\nShutting down...")
+		logf("Shutdown signal received, stopping server...")
 		cancel()
 		close(done)
 	}()
@@ -38,7 +45,7 @@ func main() {
 		listener:    listener,
 		fileManager: fileManager,
 	}
-	fmt.Printf("Starting FTP server at: %s...\n", listener.Addr().String())
+	logf("Starting FTP server on %s", listener.Addr().String())
 
 	go func() {
 		go func() {
@@ -51,7 +58,7 @@ func main() {
 			if err != nil {
 				return
 			}
-			fmt.Printf("Accepted connection from: %s\n", conn.RemoteAddr().String())
+			logf("Accepted connection from %s", conn.RemoteAddr().String())
 
 			session := &ClientSession{
 				conn:         conn,
