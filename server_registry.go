@@ -30,5 +30,30 @@ func init() {
 			description: "Disconnect from server",
 			callback:    handlerQUIT,
 		},
+		"PWD": {
+			name:        "PWD",
+			description: "Print working directory.",
+			callback:    handlePWD,
+		},
+		"CWD": {
+			name:        "CWD",
+			description: "Change working directory.",
+			callback:    handleCWD,
+		},
+		"CDUP": {
+			name:        "CDUP",
+			description: "Change to parent directory.",
+			callback:    handleCDUP,
+		},
+		"PASV": {
+			name:        "PASV",
+			description: "Requests the server-DTP to 'listen' on a data port and to wait for a connection rather",
+			callback:    handlePASV,
+		},
+		"LIST": {
+			name:        "LIST",
+			description: "Sends list from the server to the passive DTP.  If the pathname specifies a directory or other group of files, the server should transfer a list of files in the specified directory.",
+			callback:    handleLIST,
+		},
 	}
 }
