@@ -325,7 +325,7 @@ func handleRETR(cs *ClientSession, args []string) error {
 
 	_, err = io.Copy(dataConn, file)
 	if err != nil {
-		return cs.sendFTPResponse(911, "Transfer failed!")
+		return cs.sendFTPResponse(426, "File download failed")
 	}
 
 	return cs.sendFTPResponse(226)
@@ -384,18 +384,18 @@ func handleSTOR(cs *ClientSession, args []string) error {
 
 	tempFile, err := os.Create(tempPath)
 	if err != nil {
-		return cs.sendFTPResponse(911, "temp file creation failed!")
+		return cs.sendFTPResponse(451, "Cannot create temporary file")
 	}
 	defer tempFile.Close()
 
 	_, err = io.Copy(tempFile, dataConn)
 	if err != nil {
-		return cs.sendFTPResponse(911, "Transfer failed!")
+		return cs.sendFTPResponse(426, "File upload failed")
 	}
 
 	err = cs.server.fileManager.WriteFile(fullPath, tempPath)
 	if err != nil {
-		return cs.sendFTPResponse(550, "File rename on server side failed")
+		return cs.sendFTPResponse(451, "Cannot finalize file upload")
 	}
 
 	return cs.sendFTPResponse(226)
