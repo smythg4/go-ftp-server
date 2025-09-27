@@ -29,9 +29,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	fileManager := &FileManager{
+		rootJail:        "/tmp/ftp-jail", // consider adding a command line flag
+		activeUploads:   make(map[string]string),
+		activeDownloads: make(map[string]string),
+	}
 	server := &FTPServer{
-		listener: listener,
-		rootJail: "/tmp/ftp-jail", // consider adding a command line flag
+		listener:    listener,
+		fileManager: fileManager,
 	}
 	fmt.Printf("Starting FTP server at: %s...\n", listener.Addr().String())
 

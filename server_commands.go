@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -75,7 +77,7 @@ func handleCWD(cs *ClientSession, args []string) error {
 	}
 
 	// update sessions CWD
-	newDir := strings.TrimPrefix(fullPath, cs.server.rootJail)
+	newDir := strings.TrimPrefix(fullPath, cs.server.fileManager.rootJail)
 	if newDir == "" {
 		newDir = "/"
 	}
@@ -153,7 +155,7 @@ func handleLIST(cs *ClientSession, args []string) error {
 
 	err = cs.sendFTPResponse(150) // opening data connection
 	if err != nil {
-		return err
+		return cs.sendFTPResponse(426)
 	}
 
 	dataConn, err := cs.dataListener.Accept()
@@ -222,6 +224,141 @@ func permChar(mode os.FileMode, mask os.FileMode, char rune) rune {
 		return char
 	}
 	return '-'
+}
+
+func handleSTAT(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	if len(args) == 0 {
+		// Server status
+		lines := []string{
+			"FTP server status:",
+			fmt.Sprintf("Connected to %s", cs.clientID),
+			fmt.Sprintf("Logged in as %s", cs.username),
+			fmt.Sprintf("Current directory: %s", cs.currentDir),
+		}
+		return cs.sendMultilineResponse(211, lines, "End of status")
+	}
+
+	// File/directory status - like LIST but over control connection
+	// Implementation similar to LIST but simpler
+	return cs.sendFTPResponse(502, "STAT with directory not implemented at this time.")
+}
+
+func handleRETR(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	if cs.dataListener == nil {
+		return cs.sendFTPResponse(425) // no data listener set up
+	}
+	if len(args) != 1 {
+		return cs.sendFTPResponse(501)
+	}
+	fullPath, err := cs.validatePath(args[0])
+	if err != nil {
+		return cs.sendFTPResponse(550)
+	}
+
+	// check with filemanager for file existence and checkout
+
+	file, err := cs.server.fileManager.ReserveDownload(fullPath, cs.clientID)
+	if err != nil {
+		return cs.sendFTPResponse(550, err.Error()) // extract the precise reason from ReserveDownload
+	}
+	defer file.Close()
+
+	err = cs.sendFTPResponse(150) // everything's looking good, let's get you a download!
+	if err != nil {
+		return cs.sendFTPResponse(426)
+	}
+	// establish data connection and stage clean up
+	dataConn, err := cs.dataListener.Accept()
+	if err != nil {
+		return cs.sendFTPResponse(425) // unable to make data connection
+	}
+	defer dataConn.Close()
+	defer cs.dataListener.Close()
+	cs.dataListener = nil
+
+	_, err = io.Copy(dataConn, file)
+	if err != nil {
+		return cs.sendFTPResponse(911, "Transfer failed!")
+	}
+
+	cs.server.fileManager.ReleaseDownload(fullPath, cs.clientID)
+
+	return cs.sendFTPResponse(226)
+}
+
+func handleSIZE(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	if len(args) != 1 {
+		return cs.sendFTPResponse(501)
+	}
+	fullPath, err := cs.validatePath(args[0])
+	if err != nil {
+		return cs.sendFTPResponse(550)
+	}
+	size, err := cs.server.fileManager.GetSize(fullPath)
+	if err != nil {
+		return cs.sendFTPResponse(550, err.Error())
+	}
+	return cs.sendFTPResponse(213, fmt.Sprintf("%d", size))
+}
+
+func handleSTOR(cs *ClientSession, args []string) error {
+	if !cs.isAuth {
+		return cs.sendFTPResponse(530)
+	}
+	if cs.dataListener == nil {
+		return cs.sendFTPResponse(425) // no data listener set up
+	}
+	if len(args) != 1 {
+		return cs.sendFTPResponse(501)
+	}
+	filename := filepath.Base(args[0])
+	fullPath := filepath.Join(cs.server.fileManager.rootJail, cs.currentDir, filename)
+
+	tempPath := fullPath + ".tmp." + cs.clientID
+	err := cs.server.fileManager.ReserveUpload(fullPath, cs.clientID)
+	if err != nil {
+		return cs.sendFTPResponse(550, err.Error()) // extract the precise reason from ReserveDownload
+	}
+
+	err = cs.sendFTPResponse(150) // everything's looking good, let's get you uploading!
+	if err != nil {
+		return cs.sendFTPResponse(426)
+	}
+	// establish data connection and stage clean up
+	dataConn, err := cs.dataListener.Accept()
+	if err != nil {
+		return cs.sendFTPResponse(425) // unable to make data connection
+	}
+	defer dataConn.Close()
+	defer cs.dataListener.Close()
+	cs.dataListener = nil
+
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return cs.sendFTPResponse(911, "temp file creation failed!")
+	}
+	defer tempFile.Close()
+	_, err = io.Copy(tempFile, dataConn)
+	if err != nil {
+		return cs.sendFTPResponse(911, "Transfer failed!")
+	}
+
+	err = cs.server.fileManager.WriteFile(fullPath, tempPath)
+	if err != nil {
+		return cs.sendFTPResponse(550, "File rename on server side failed")
+	}
+	cs.server.fileManager.ReleaseUpload(fullPath, cs.clientID)
+
+	return cs.sendFTPResponse(226)
 }
 
 func handlerQUIT(cs *ClientSession, args []string) error {

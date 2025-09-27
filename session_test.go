@@ -6,8 +6,13 @@ import (
 
 func TestValidatePath(t *testing.T) {
 	// Setup test session
+	fileManager := &FileManager{
+		rootJail:      "/tmp/ftp-jail",
+		activeUploads: make(map[string]string),
+	}
+
 	server := &FTPServer{
-		rootJail: "/tmp/ftp-jail",
+		fileManager: fileManager,
 	}
 
 	session := &ClientSession{
@@ -157,7 +162,11 @@ func TestValidatePathDifferentJails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := &FTPServer{rootJail: tt.jail}
+			fileManager := &FileManager{
+				rootJail:      tt.jail,
+				activeUploads: make(map[string]string),
+			}
+			server := &FTPServer{fileManager: fileManager}
 			session := &ClientSession{
 				server:     server,
 				currentDir: "/",

@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"net"
-	"path/filepath"
-	"strings"
 )
 
 type ClientSession struct {
@@ -59,37 +57,10 @@ func (cs *ClientSession) run() {
 	}
 }
 
-func (cs *ClientSession) validatePath(userPath string) (string, error) {
-	// Security check FIRST - before any path operations
-	if strings.Contains(userPath, "..") {
-		// Now we need to validate if this .. usage is legitimate
-		// Split into components and simulate the path traversal
-		currentDepth := len(strings.Split(strings.Trim(cs.currentDir, "/"), "/"))
-		if cs.currentDir == "/" {
-			currentDepth = 0
-		}
-		components := strings.Split(userPath, "/")
-		depth := currentDepth
-		for _, comp := range components {
-			if comp == ".." {
-				depth--
-				if depth < 0 {
-					return "", fmt.Errorf("path traversal attempt detected")
-				}
-			} else if comp != "." && comp != "" {
-				depth++
-			}
-		}
-	}
-	// Now do the normal path operations
-	path := filepath.Clean(userPath)
-	if !strings.HasPrefix(userPath, "/") {
-		path = filepath.Join(cs.currentDir, path)
-	}
-	fullPath := filepath.Join(cs.server.rootJail, path)
-	return fullPath, nil
-}
-
 func (cs *ClientSession) Close() error {
 	return cs.conn.Close()
+}
+
+func (cs *ClientSession) validatePath(userPath string) (string, error) {
+	return cs.server.fileManager.validatePath(userPath, cs.currentDir)
 }

@@ -4,23 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A concurrent FTP server (`goftpserver`) written in Go 1.24.2, implementing RFC 959 from first principles with proper session management, RFC-compliant responses, and security jail architecture.
+A fully functional FTP server (`goftpserver`) written in Go 1.24.2, implementing RFC 959 from first principles with concurrent session management, security jail system, data connections, and complete directory navigation.
 
 ## Development Commands
 
 ### Build and Run
 ```bash
 go build .                    # Build the project
-./goftpserver                 # Run server on 127.0.0.1:2121
+./goftpserver                 # Run server on 0.0.0.0:2121
 ```
 
-The server hardcodes port 2121 and jail directory `/tmp/ftp-jail` - consider adding command line flags for production use.
+The server listens on all interfaces (0.0.0.0:2121) with jail directory `/tmp/ftp-jail` - consider adding command line flags for production use.
 
 ### Code Quality
 ```bash
 go fmt ./...                  # Format all Go files
 go vet ./...                  # Static analysis for potential issues
 go mod tidy                   # Clean up module dependencies
+go test ./...                 # Run unit tests (validatePath has test coverage)
 ```
 
 ## Architecture Overview
@@ -29,92 +30,140 @@ go mod tidy                   # Clean up module dependencies
 - **`main.go`** - TCP server, signal handling, and session management
 - **`server_registry.go`** - Command dispatch system with extensible registry pattern
 - **`server_commands.go`** - Implementation of FTP command handlers
+- **`session.go`** - ClientSession struct and core session management including security
+- **`protocol.go`** - FTP command parsing and response utilities
+- **`server.go`** - FTPServer struct definition
 - **`ftp_responses.go`** - RFC 959 compliant response codes and messages
+- **`session_test.go`** - Unit tests for path validation security
 
 ### Core Components
 
 #### Concurrent Session Architecture
 - **FTPServer**: Manages TCP listener and jail configuration (`rootJail` field)
-- **ClientSession**: Per-connection state tracking (authentication, current directory, client ID)
+- **ClientSession**: Per-connection state tracking (authentication, current directory, client ID, data connections)
 - **Goroutine-per-connection**: Each client gets isolated session with proper cleanup
 - **Graceful shutdown**: Signal handling (SIGINT/SIGTERM) with context cancellation
 
-#### Command Processing Pipeline
-1. **Command Parsing**: `parseCommand()` converts raw input to structured `FTPCommand` with uppercase normalization
-2. **Registry Dispatch**: `serverRegistry` map routes commands to handler functions
-3. **Response Generation**: `sendFTPResponse()` and `sendMultilineResponse()` ensure RFC compliance
-4. **Error Handling**: Commands return errors; QUIT specifically returns "client requested quit" to terminate session
+#### Data Connection Management
+- **PASV Support**: Server creates data listeners for passive mode transfers
+- **IP Address Handling**: Correctly formats external IP addresses for client connections
+- **Connection Lifecycle**: Data connections created per-operation, properly cleaned up
+- **LIST Implementation**: Directory listings with proper ls-la formatting over data connection
 
 #### Security Architecture (Jail System)
-- **rootJail**: Server-level directory restriction (currently `/tmp/ftp-jail`)
+- **rootJail**: Server-level directory restriction (`/tmp/ftp-jail`)
 - **currentDir**: Session-relative path tracking (always starts with "/")
-- **Path validation**: Future `validatePath()` method will prevent directory traversal attacks
-- **Authentication**: Simple anonymous-only auth in PASS handler (extensible for real auth)
+- **Path Validation**: `validatePath()` in `session.go:62` prevents directory traversal attacks
+- **Depth Tracking**: Algorithm simulates directory traversal to catch escape attempts
+- **Authentication**: Anonymous login flow (extensible for real authentication)
 
 ### FTP Protocol Implementation
 
-#### RFC-Compliant Responses
-- **Single-line responses**: `sendFTPResponse(code)` uses `ftpResponses` map for standard messages
-- **Multi-line responses**: `sendMultilineResponse()` handles dash/space formatting per RFC
-- **Standard codes**: 220 (welcome), 331 (need password), 230 (logged in), 221 (goodbye), 5xx (errors)
-
-#### Command Registry Pattern
-```go
-type serverCommand struct {
-    callback    func(*ClientSession, []string) error
-    description string  // Used by HELP command
-    name        string
-}
-```
-
-#### Session Lifecycle
-1. **Connection**: TCP accept creates `ClientSession` with default state
-2. **Welcome**: Multi-line 220 response sent automatically
-3. **Authentication**: USER → PASS flow sets `isAuth` flag
-4. **Command processing**: Loop reads/parses/dispatches until error or QUIT
-5. **Cleanup**: `defer conn.Close()` ensures resource cleanup
-
-### Current Command Support
-- **USER/PASS**: Anonymous authentication flow
+#### Complete Command Set
+- **USER/PASS**: Authentication flow with anonymous support
+- **PWD**: Print working directory relative to jail
+- **CWD**: Change directory with security validation
+- **CDUP**: Change to parent directory (uses CWD internally)
+- **PASV**: Passive mode data connection setup
+- **LIST**: Directory listing over data connection with Unix-style formatting
+- **STAT**: Server status (no args) or file status (with args - returns 502 not implemented)
 - **HELP**: Dynamic command listing from registry descriptions
 - **QUIT**: Graceful session termination
-- **Unimplemented**: Returns proper 502 response code
+
+#### Advanced Features
+- **Multi-line Responses**: Proper RFC 959 dash/space formatting
+- **IP Address Parsing**: Correct PASV response formatting (comma-separated, no spaces)
+- **File Permissions**: Unix-style permission display in LIST output
+- **Error Handling**: Comprehensive error codes (530 auth required, 550 access denied, etc.)
+
+#### Protocol Compliance
+- **Response Codes**: Full RFC 959 compliance with proper 3-digit codes
+- **Command Parsing**: Case-insensitive with proper argument handling
+- **Connection Flow**: Control + data connection model correctly implemented
+- **Transfer States**: Proper 150/226 sequencing for data transfers
 
 ## Adding New Commands
 
-1. Add command entry to `serverRegistry` in `server_registry.go`
-2. Implement handler function in `server_commands.go` following signature:
+1. Add command entry to `serverRegistry` in `server_registry.go`:
    ```go
-   func handlerCOMMAND(cs *ClientSession, args []string) error
+   "NEWCMD": {
+       name:        "NEWCMD <args>",
+       description: "Description for HELP output",
+       callback:    handleNEWCMD,
+   },
    ```
-3. Use `cs.sendFTPResponse(code)` for standard responses
-4. Use `cs.sendMultilineResponse(code, lines, finalMsg)` for complex output
-5. Return non-nil error only for session-terminating conditions
 
-## Security Considerations
+2. Implement handler function in `server_commands.go`:
+   ```go
+   func handleNEWCMD(cs *ClientSession, args []string) error {
+       if !cs.isAuth {
+           return cs.sendFTPResponse(530) // Auth required
+       }
+       // Command implementation
+       return cs.sendFTPResponse(250) // Success
+   }
+   ```
 
-### Directory Jail (Partially Implemented)
-- Server has `rootJail` field but path validation not yet implemented
-- All sessions start with `currentDir: "/"` (relative to jail)
-- Future path operations must validate against directory traversal
+3. For data connection commands (like LIST), follow the PASV → data transfer → cleanup pattern
+4. Use `cs.validatePath()` for any file/directory operations
+
+## Security Implementation
+
+### Directory Jail (Fully Implemented)
+- **Path Validation**: `validatePath()` in `session.go:62-91` prevents escape attempts
+- **Depth Tracking**: Simulates directory traversal to detect `../` escape attempts
+- **Absolute Path Join**: All paths resolved against `rootJail` directory
+- **Clean Path Processing**: Uses `filepath.Clean()` for normalization
 
 ### Connection Security
-- No authentication beyond anonymous login
-- No connection limits or rate limiting
-- No TLS/encryption support
-- Consider adding user account system and connection quotas
+- **Authentication Gates**: Commands check `cs.isAuth` before execution
+- **Path Sanitization**: All user paths validated before filesystem operations
+- **Resource Cleanup**: Data connections properly closed after use
+- **Error Responses**: Security violations return appropriate FTP error codes
 
-## RFC 959 Compliance
+## Testing
 
-The server follows RFC 959 standards for:
-- Response code formatting (3-digit codes with proper spacing/dashes)
-- Multi-line response syntax
-- Standard response messages with periods
-- Command case-insensitivity (uppercase normalization)
-- Basic authentication flow (USER/PASS sequence)
+### Unit Tests
+- **Path Validation**: `session_test.go` covers security-critical `validatePath()` function
+- **Test Coverage**: Includes escape attempt detection and legitimate navigation
 
-Missing RFC features:
-- Data connections (PASV/PORT/LIST/RETR/STOR)
-- Directory operations (CWD/CDUP/PWD/MKD/RMD)
-- File operations beyond basic protocol
-- Extended commands (SIZE/MDTM per RFC 3659)
+### Manual Testing
+Use the companion FTP client or standard FTP clients for integration testing:
+```bash
+# From go-ftp-client directory
+./goftp -host localhost:2121 -user anonymous -pass test@example.com
+```
+
+## Known Limitations
+
+### Missing RFC Features
+- **File Transfer**: RETR/STOR commands not yet implemented
+- **PORT Mode**: Only PASV supported, no active mode (PORT command)
+- **Extended Commands**: No RFC 3659 extensions (MDTM, SIZE, MLSD)
+- **Transfer Types**: No ASCII/Binary mode handling (TYPE command)
+
+### Production Considerations
+- **User Authentication**: Only anonymous login supported
+- **Connection Limits**: No concurrent connection or rate limiting
+- **TLS/Security**: No encryption support (FTPS/SFTP)
+- **Logging**: Minimal logging beyond debug output
+- **Configuration**: Hardcoded port and jail directory
+
+## Architecture Patterns
+
+### Session State Management
+Each `ClientSession` maintains:
+- Connection state (auth status, current directory)
+- Network connections (control + data listener)
+- Security context (jail root reference)
+
+### Registry Pattern
+Commands follow a consistent pattern:
+- Registry-based dispatch for extensibility
+- Consistent error handling and response formatting
+- Authentication and authorization checks per command
+
+### Resource Management
+- Goroutine-per-connection with proper cleanup
+- Data connections created/destroyed per operation
+- Signal handling for graceful shutdown
